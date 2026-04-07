@@ -1,0 +1,6 @@
+langchain
+langgraph
+langchain-aws
+pandas
+numpy
+matplotlib
