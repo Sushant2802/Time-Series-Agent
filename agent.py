@@ -34,16 +34,16 @@ def run_query(query: str, thread_id: str = "sm123") -> str:
 
     messages = state.values.get("messages", []) if state else []
 
-    # ✅ Keep last 10 messages only (memory control)
+    # Keep last 10 messages only (memory control)
     messages = messages[-10:]
 
-    # ✅ Append new user message
+    # Append new user message
     messages.append({
         "role": "user",
         "content": query
     })
 
-    # ✅ Invoke agent
+    #  Invoke agent
     response = agent.invoke(
         {"messages": messages},
         config={"configurable": {"thread_id": thread_id}}
