@@ -1,7 +1,23 @@
 # tools.py
 # matplotlib.use('Agg')
-import matplotlib
-matplotlib.use('TkAgg')  # ✅ best for VS Code / local
+# import matplotlib
+# matplotlib.use('TkAgg')  # ✅ best for VS Code / local
+
+import plotly.graph_objects as go
+import plotly.express as px
+import plotly.io as pio
+
+import numpy as np
+import pandas as pd
+import uuid
+import os
+
+import webbrowser   # for auto-open
+from store import DataFrameStore, validate_column
+from IPython.display import display, Image   # Important for notebook display
+
+import plotly.graph_objects as go
+import plotly.express as px
 
 from langchain.tools import tool
 import numpy as np
@@ -11,6 +27,7 @@ import os
 import pandas as pd
 from store import DataFrameStore, validate_column
 from utils import print_ascii_line_plot
+from typing import Union, List
 
 os.makedirs("plots", exist_ok=True)
 
@@ -22,17 +39,34 @@ STATS_OPERATIONS = {
     "percentile": lambda s, p: float(np.percentile(s, p)) if p is not None else None,
 }
 
+
 @tool
 def stats_tool(
     column: str,
     operation: str,
     start_date: str = None,
     end_date: str = None,
-    percentile: float = None
+    percentile: Union[float, List[float]] = None
 ):
     """
-    Calculate statistics for a column.
-    """
+Compute statistics for a column in time-series data.
+
+Supports: mean, median, std, percentile, summary,
+percentile_below, percentile_above, percentile_range.
+
+Args:
+    column (str): Column name.
+    operation (str): Type of statistic.
+    start_date (str, optional): Filter start date.
+    end_date (str, optional): Filter end date.
+    percentile (float | list[float], optional):
+        - single value → percentile / below / above
+        - [low, high] → percentile_range
+
+Returns:
+    dict: Result with value/threshold(s) and count
+    str: Error message if invalid input or no data
+"""
 
     df = DataFrameStore.get_df().copy()
 
@@ -66,6 +100,14 @@ def stats_tool(
 
     if series.empty:
         return "Error: No valid data in selected column"
+    
+    # ✅ Percentile validation
+    if operation in ["percentile", "percentile_below", "percentile_above"] and percentile is None:
+        return "Error: Percentile value required"
+
+    if operation == "percentile_range":
+        if not isinstance(percentile, (list, tuple)) or len(percentile) != 2:
+            return "Error: percentile_range requires percentile=[low, high]"
 
     try:
         # ✅ SUMMARY
@@ -108,7 +150,10 @@ def stats_tool(
 
         # ✅ RANGE
         if operation == "percentile_range":
-            p_low, p_high = percentile
+            if not isinstance(percentile, (list, tuple)) or len(percentile) != 2:
+                return "Error: percentile_range requires percentile=[low, high]"
+
+            p_low, p_high = sorted(percentile)
 
             low_val = float(np.percentile(series, p_low))
             high_val = float(np.percentile(series, p_high))
@@ -124,6 +169,23 @@ def stats_tool(
                 "high_threshold": round(high_val, 4),
                 "count": len(filtered)
             }
+        # if operation == "percentile_range":
+        #     p_low, p_high = percentile
+
+        #     low_val = float(np.percentile(series, p_low))
+        #     high_val = float(np.percentile(series, p_high))
+
+        #     filtered = series[(series >= low_val) & (series <= high_val)]
+
+        #     return {
+        #         "type": "percentile_range",
+        #         "column": column,
+        #         "low": p_low,
+        #         "high": p_high,
+        #         "low_threshold": round(low_val, 4),
+        #         "high_threshold": round(high_val, 4),
+        #         "count": len(filtered)
+        #     }
 
         # ✅ NORMAL OPS
         if operation not in STATS_OPERATIONS:
@@ -154,390 +216,185 @@ PLOT_FUNCTIONS = {
 }
 
 
+
+
 @tool
-
 def plot_tool(
-
     columns: list[str],
-
     plot_type: str,
-
     start_date: str = None,
-
     end_date: str = None,
-
     filter_type: str = None,
-
     threshold: float = None,
-
     low_threshold: float = None,
-
     high_threshold: float = None,
-
     count: int = None
-
 ):
     """
-
     Generate visualization for selected columns with optional filtering.
-    
-    Supports line, bar, and histogram plots with date-range filtering.
-    
+    Supports line, bar, and histogram plots with date-range filtering, data range filtering.
     Filtering Rules:
-
     - Uses ACTUAL threshold values (from stats_tool), NOT percentiles
-
     - Supports:
-
         - percentile_below → uses `threshold`
-
         - percentile_above → uses `threshold`
-
         - percentile_range → uses `low_threshold` and `high_threshold`
-    
     Chaining Contract:
-
     - Thresholds and count MUST come from stats_tool
-
     - NEVER recompute thresholds inside this tool
-
     - If count is provided → use it directly
-
     - Else → fallback to computed row count
-    
     Args:
-
     - columns: list of column names
-
     - plot_type: {"line", "bar", "hist"}
-
     - start_date, end_date: optional date filters
-
     - filter_type: filtering mode
-
     - threshold: single cutoff value
-
     - low_threshold, high_threshold: range values
-
     - count: filtered count from stats_tool
-    
     Returns:
-
     - Success message or error string
-
     """
- 
  
     df = DataFrameStore.get_df().copy()
  
     if df is None or df.empty:
-
         return "Error: No data available"
  
     try:
-
         columns = [validate_column(col) for col in columns]
-
     except Exception:
-
         return f"Error: Invalid columns {columns}"
  
     timestamp_col = df.columns[0]
  
     if not pd.api.types.is_datetime64_any_dtype(df[timestamp_col]):
-
         try:
-
             df[timestamp_col] = pd.to_datetime(df[timestamp_col])
-
         except:
-
             return "Error: Failed to parse timestamp column"
  
     if start_date:
-
         df = df[df[timestamp_col] >= pd.to_datetime(start_date)]
  
     if end_date:
-
         df = df[df[timestamp_col] <= pd.to_datetime(end_date)]
  
     if df.empty:
-
         return "Error: No data available after applying date filter"
  
     # ✅ APPLY FILTER USING ACTUAL THRESHOLD VALUES (NO RECOMPUTATION)
-
     col = columns[0]
  
     if filter_type == "percentile_below" and threshold is not None:
-
         df = df[df[col] <= threshold]
  
     elif filter_type == "percentile_above" and threshold is not None:
-
         df = df[df[col] >= threshold]
  
     elif filter_type == "percentile_range" and low_threshold is not None and high_threshold is not None:
-
         df = df[(df[col] >= low_threshold) & (df[col] <= high_threshold)]
  
     if df.empty:
-
         return "No data after applying filter"
  
     # ✅ USE COUNT FROM STATS TOOL (DO NOT RECOMPUTE)
-
     filtered_count = count if count is not None else len(df)
  
-    if plot_type not in PLOT_FUNCTIONS:
-
+    if plot_type not in ["line", "bar", "hist"]:
         return "Error: Supported plot types: line, bar, hist"
  
     plot_id = str(uuid.uuid4())
-
-    file_path = f"plots/{plot_id}.png"
- 
-    plt.figure(figsize=(10, 6))
+    file_path = f"plots/{plot_id}.html"   # ← Now saves as interactive HTML (no GUI)
  
     try:
+        # Prepare dataframe for plotting (exact same logic as before)
+        df_plot = df.copy()
 
         if plot_type == "line":
+            df_plot = df_plot.set_index(timestamp_col)
+            fig = px.line(
+                df_plot,
+                y=columns,
+                title=f"{plot_type.capitalize()} Plot - {', '.join(columns)} (Count = {filtered_count})"
+            )
+        elif plot_type == "bar":
+            # Keep original 150-row limit for bar plots
+            if len(df_plot) > 150:
+                df_plot = df_plot.iloc[:150]
+            fig = px.bar(
+                df_plot,
+                x=df_plot.index,
+                y=columns,
+                title=f"{plot_type.capitalize()} Plot - {', '.join(columns)} (Count = {filtered_count})"
+            )
+        elif plot_type == "hist":
+            # Multi-column histogram with overlay (matches original matplotlib behavior)
+            fig = go.Figure()
+            for col_name in columns:
+                fig.add_trace(
+                    go.Histogram(
+                        x=df_plot[col_name],
+                        name=col_name,
+                        opacity=0.7
+                    )
+                )
+            fig.update_layout(barmode="overlay")
 
-            df = df.set_index(timestamp_col)
- 
-        PLOT_FUNCTIONS[plot_type](df, columns)
- 
-        # ✅ DRAW ACTUAL THRESHOLD VALUES
-
+        # ✅ DRAW ACTUAL THRESHOLD VALUES (Plotly hlines)
         if threshold is not None:
-
-            plt.axhline(threshold, linestyle="--", label=f"Threshold = {round(threshold, 4)}")
- 
+            fig.add_hline(
+                y=threshold,
+                line_dash="dash",
+                line_color="red",
+                annotation_text=f"Threshold = {round(threshold, 4)}",
+                annotation_position="top right"
+            )
         if low_threshold is not None:
-
-            plt.axhline(low_threshold, linestyle="--", label=f"Low = {round(low_threshold, 4)}")
- 
+            fig.add_hline(
+                y=low_threshold,
+                line_dash="dash",
+                line_color="green",
+                annotation_text=f"Low = {round(low_threshold, 4)}",
+                annotation_position="top right"
+            )
         if high_threshold is not None:
+            fig.add_hline(
+                y=high_threshold,
+                line_dash="dash",
+                line_color="blue",
+                annotation_text=f"High = {round(high_threshold, 4)}",
+                annotation_position="top right"
+            )
 
-            plt.axhline(high_threshold, linestyle="--", label=f"High = {round(high_threshold, 4)}")
- 
-        plt.title(f"{plot_type.capitalize()} Plot - {', '.join(columns)} (Count = {filtered_count})")
+        # Final layout (grid + legend with count)
+        fig.update_layout(
+            legend_title_text=f"Count = {filtered_count}",
+            xaxis_title="Time" if plot_type == "line" else "Index",
+            yaxis_title="Value",
+            template="plotly_white",
+            showlegend=True
+        )
 
-        plt.legend(title=f"Count = {filtered_count}")
+        fig.write_html(file_path)
+        fig.show()  # Display the interactive plot in the notebook
 
-        plt.grid(True, alpha=0.3)
-
-        plt.tight_layout()
- 
-        plt.savefig(file_path)
-
-        plt.show()
-
-        plt.close()
- 
         return f"Plot generated with filtering applied on {columns}"
- 
+
     except Exception as e:
-
-        plt.close()
-
         return f"Error generating plot: {str(e)}"
- 
-
-    
-
-# # Stats Registry
-# STATS_OPERATIONS = {
-#     "mean": lambda s: float(s.mean()),
-#     "median": lambda s: float(s.median()),
-#     "std": lambda s: float(s.std()),
-#     "percentile": lambda s, p: float(np.percentile(s, p)) if p is not None else None,
-# }
-
-# @tool
-# def stats_tool(
-#     column: str,
-#     operation: str,
-#     start_date: str = None,
-#     end_date: str = None,
-#     percentile: float = None
-# ):
-#     """
-#     Calculate statistics for a column.
-
-#     Use ONLY for numerical/statistical queries.
-
-#     Args:
-#     - column: column name
-#     - operation: one of {"mean", "median", "std", "percentile", "summary"}
-#     - start_date, end_date: optional date range
-#     - percentile: required if operation = percentile
-
-#     Returns:
-#     - Result or error message
-#     """
-
-#     # Load data
-#     df = DataFrameStore.get_df().copy()
-
-#     if df is None or df.empty:
-#         return "Error: No data available"
-
-#     # Validate column
-#     try:
-#         column = validate_column(column)
-#     except Exception:
-#         return f"Error: Invalid column '{column}'"
-
-#     # Detect timestamp column (assumes first column)
-#     timestamp_col = df.columns[0]
-
-#     # Ensure datetime
-#     if not pd.api.types.is_datetime64_any_dtype(df[timestamp_col]):
-#         try:
-#             df[timestamp_col] = pd.to_datetime(df[timestamp_col])
-#         except Exception:
-#             return "Error: Failed to parse timestamp column"
-
-#     # Apply date filtering
-#     if start_date:
-#         df = df[df[timestamp_col] >= pd.to_datetime(start_date)]
-
-#     if end_date:
-#         df = df[df[timestamp_col] <= pd.to_datetime(end_date)]
-
-#     if df.empty:
-#         return "Error: No data available after applying date filter"
-
-#     # Extract series
-#     series = df[column].dropna()
-
-#     if series.empty:
-#         return "Error: No valid data in selected column"
-
-#     try:
-#         # ✅ NEW: summary support (ONLY addition)
-#         if operation in ["summary", "describe", "all"]:
-#             return (
-#                 f"Summary Statistics for {column}:\n"
-#                 f"- Mean: {round(series.mean(), 4)}\n"
-#                 f"- Median: {round(series.median(), 4)}\n"
-#                 f"- Std: {round(series.std(), 4)}\n"
-#                 f"- Min: {round(series.min(), 4)}\n"
-#                 f"- Max: {round(series.max(), 4)}"
-#             )
-
-#         # Existing validation (slightly extended)
-#         if operation not in STATS_OPERATIONS:
-#             return "Error: Supported operations: mean, median, std, percentile, summary"
-
-#         # Existing logic (UNCHANGED)
-#         if operation == "percentile":
-#             if percentile is None:
-#                 return "Error: Percentile value (0-100) is required"
-#             value = STATS_OPERATIONS[operation](series, percentile)
-#         else:
-#             value = STATS_OPERATIONS[operation](series)
-
-#         value = round(float(value), 4)
-
-#         return f"{operation.upper()} of {column} = {value} (from {start_date or 'start'} to {end_date or 'end'})"
-
-#     except Exception as e:
-#         return f"Error calculating statistic: {str(e)}"
 
 
 
-# @tool
-# def stats_tool(
-#     column: str,
-#     operation: str,
-#     start_date: str = None,
-#     end_date: str = None,
-#     percentile: float = None
-# ):
-#     """
-#     Calculate statistics for a column.
-
-#     Use ONLY for numerical/statistical queries.
-
-#     Args:
-#     - column: column name
-#     - operation: one of {"mean", "median", "std", "percentile"}
-#     - start_date, end_date: optional date range
-#     - percentile: required if operation = percentile
-
-#     Returns:
-#     - Result or error message
-#     """
-
-#     # Load data
-#     df = DataFrameStore.get_df().copy()
-
-#     if df is None or df.empty:
-#         return "Error: No data available"
-
-#     # Validate column
-#     try:
-#         column = validate_column(column)
-#     except Exception:
-#         return f"Error: Invalid column '{column}'"
-
-#     # Detect timestamp column (assumes first column)
-#     timestamp_col = df.columns[0]
-
-#     # Ensure datetime
-#     if not pd.api.types.is_datetime64_any_dtype(df[timestamp_col]):
-#         try:
-#             df[timestamp_col] = pd.to_datetime(df[timestamp_col])
-#         except Exception:
-#             return "Error: Failed to parse timestamp column"
-
-#     # Apply date filtering
-#     if start_date:
-#         df = df[df[timestamp_col] >= pd.to_datetime(start_date)]
-
-#     if end_date:
-#         df = df[df[timestamp_col] <= pd.to_datetime(end_date)]
-
-#     if df.empty:
-#         return "Error: No data available after applying date filter"
-
-#     # Extract series
-#     series = df[column].dropna()
-
-#     if series.empty:
-#         return "Error: No valid data in selected column"
-
-#     # Validate operation
-#     if operation not in STATS_OPERATIONS:
-#         return "Error: Supported operations: mean, median, std, percentile"
-
-#     try:
-#         # Compute
-#         if operation == "percentile":
-#             if percentile is None:
-#                 return "Error: Percentile value (0-100) is required"
-#             value = STATS_OPERATIONS[operation](series, percentile)
-#         else:
-#             value = STATS_OPERATIONS[operation](series)
-
-#         value = round(float(value), 4)
-
-#         return f"{operation.upper()} of {column} = {value} (from {start_date or 'start'} to {end_date or 'end'})"
-
-#     except Exception as e:
-#         return f"Error calculating statistic: {str(e)}"
 
 
 
-# # Plot Registry
-# PLOT_FUNCTIONS = {
-#     "line": lambda df, cols: [plt.plot(df.index, df[col], label=col) for col in cols],
-#     "bar":  lambda df, cols: [plt.bar(df.index[:150], df[col][:150], label=col, alpha=0.7) for col in cols],
-#     "hist": lambda df, cols: [plt.hist(df[col].dropna(), bins=25, alpha=0.7, label=col) for col in cols],
-# }
+
+
+
+
+
+
 
 
 # @tool
@@ -545,87 +402,511 @@ def plot_tool(
 #     columns: list[str],
 #     plot_type: str,
 #     start_date: str = None,
-#     end_date: str = None
+#     end_date: str = None,
+#     filter_type: str = None,
+#     threshold: float = None,
+#     low_threshold: float = None,
+#     high_threshold: float = None,
+#     count: int = None
 # ):
 #     """
-#     Generate plot for given columns.
+#     Generate visualization for selected columns with optional filtering.
+#     Supports line, bar, and histogram plots with date-range filtering.
+#     Filtering Rules:
+#     - Uses ACTUAL threshold values (from stats_tool), NOT percentiles
 
-#     Use ONLY when user explicitly requests visualization.
-
+#     - Supports:
+#         - percentile_below → uses `threshold`
+#         - percentile_above → uses `threshold`
+#         - percentile_range → uses `low_threshold` and `high_threshold`
+    
+#     Chaining Contract:
+#     - Thresholds and count MUST come from stats_tool
+#     - NEVER recompute thresholds inside this tool
+#     - If count is provided → use it directly
+#     - Else → fallback to computed row count
+    
 #     Args:
 #     - columns: list of column names
-#     - plot_type: one of {"line", "bar", "hist"}
-#     - start_date, end_date: optional date range
-
+#     - plot_type: {"line", "bar", "hist"}
+#     - start_date, end_date: optional date filters
+#     - filter_type: filtering mode
+#     - threshold: single cutoff value
+#     - low_threshold, high_threshold: range values
+#     - count: filtered count from stats_tool
+    
 #     Returns:
-#     - Success message or error
+#     - Success message or error string
 #     """
-
-#     # Load data
+ 
 #     df = DataFrameStore.get_df().copy()
-
+ 
 #     if df is None or df.empty:
 #         return "Error: No data available"
-
-#     # Validate columns
+ 
 #     try:
 #         columns = [validate_column(col) for col in columns]
 #     except Exception:
 #         return f"Error: Invalid columns {columns}"
-
-#     # Detect timestamp column (assumes first column)
+ 
 #     timestamp_col = df.columns[0]
-
-#     # Ensure datetime
+ 
 #     if not pd.api.types.is_datetime64_any_dtype(df[timestamp_col]):
 #         try:
 #             df[timestamp_col] = pd.to_datetime(df[timestamp_col])
-#         except Exception:
+#         except:
 #             return "Error: Failed to parse timestamp column"
-
-#     # Apply date filtering
+ 
 #     if start_date:
 #         df = df[df[timestamp_col] >= pd.to_datetime(start_date)]
-
+ 
 #     if end_date:
 #         df = df[df[timestamp_col] <= pd.to_datetime(end_date)]
-
+ 
 #     if df.empty:
 #         return "Error: No data available after applying date filter"
-
-#     # Validate plot type
-#     if plot_type not in PLOT_FUNCTIONS:
+ 
+#     # APPLY FILTER USING ACTUAL THRESHOLD VALUES (NO RECOMPUTATION)
+#     col = columns[0]
+ 
+#     if filter_type == "percentile_below" and threshold is not None:
+#         df = df[df[col] <= threshold]
+ 
+#     elif filter_type == "percentile_above" and threshold is not None:
+#         df = df[df[col] >= threshold]
+ 
+#     elif filter_type == "percentile_range" and low_threshold is not None and high_threshold is not None:
+#         df = df[(df[col] >= low_threshold) & (df[col] <= high_threshold)]
+ 
+#     if df.empty:
+#         return "No data after applying filter"
+ 
+#     # USE COUNT FROM STATS TOOL (DO NOT RECOMPUTE)
+#     filtered_count = count if count is not None else len(df)
+ 
+#     if plot_type not in ["line", "bar", "hist"]:
 #         return "Error: Supported plot types: line, bar, hist"
-
-#     # Generate plot
+ 
 #     plot_id = str(uuid.uuid4())
-#     file_path = f"plots/{plot_id}.png"
-
-#     plt.figure(figsize=(10, 6))
-
+#     file_path = f"plots/{plot_id}.html"   # ← Now saves as interactive HTML (no GUI)
+ 
 #     try:
-#         # Set index for time-series
+#         # Prepare dataframe for plotting (exact same logic as before)
+#         df_plot = df.copy()
+
 #         if plot_type == "line":
-#             df = df.set_index(timestamp_col)
+#             df_plot = df_plot.set_index(timestamp_col)
+#             fig = px.line(
+#                 df_plot,
+#                 y=columns,
+#                 title=f"{plot_type.capitalize()} Plot - {', '.join(columns)} (Count = {filtered_count})"
+#             )
+#         elif plot_type == "bar":
+#             # Keep original 150-row limit for bar plots
+#             if len(df_plot) > 150:
+#                 df_plot = df_plot.iloc[:150]
+#             fig = px.bar(
+#                 df_plot,
+#                 x=df_plot.index,
+#                 y=columns,
+#                 title=f"{plot_type.capitalize()} Plot - {', '.join(columns)} (Count = {filtered_count})"
+#             )
+#         elif plot_type == "hist":
+#             # Multi-column histogram with overlay (matches original matplotlib behavior)
+#             fig = go.Figure()
+#             for col_name in columns:
+#                 fig.add_trace(
+#                     go.Histogram(
+#                         x=df_plot[col_name],
+#                         name=col_name,
+#                         opacity=0.7
+#                     )
+#                 )
+#             fig.update_layout(barmode="overlay")
 
-#         # Call your existing plot functions
-#         PLOT_FUNCTIONS[plot_type](df, columns)
+#         # DRAW ACTUAL THRESHOLD VALUES (Plotly hlines)
+#         if threshold is not None:
+#             fig.add_hline(
+#                 y=threshold,
+#                 line_dash="dash",
+#                 line_color="red",
+#                 annotation_text=f"Threshold = {round(threshold, 4)}",
+#                 annotation_position="top right"
+#             )
+#         if low_threshold is not None:
+#             fig.add_hline(
+#                 y=low_threshold,
+#                 line_dash="dash",
+#                 line_color="green",
+#                 annotation_text=f"Low = {round(low_threshold, 4)}",
+#                 annotation_position="top right"
+#             )
+#         if high_threshold is not None:
+#             fig.add_hline(
+#                 y=high_threshold,
+#                 line_dash="dash",
+#                 line_color="blue",
+#                 annotation_text=f"High = {round(high_threshold, 4)}",
+#                 annotation_position="top right"
+#             )
 
-#         plt.title(f"{plot_type.capitalize()} Plot - {', '.join(columns)}")
-#         plt.legend()
-#         plt.grid(True, alpha=0.3)
-#         plt.tight_layout()
+#         # Final layout (grid + legend with count)
+#         fig.update_layout(
+#             legend_title_text=f"Count = {filtered_count}",
+#             xaxis_title="Time" if plot_type == "line" else "Index",
+#             yaxis_title="Value",
+#             template="plotly_white",
+#             showlegend=True
+#         )
 
-#         # ✅ Save + Show
-#         plt.savefig(file_path)
-#         plt.show()
-#         plt.close()
+#         fig.write_html(file_path)
 
-#         return f"Successfully generated {plot_type} plot for {columns} between {start_date} and {end_date}"
+#         return f"Plot generated with filtering applied on {columns}"
 
 #     except Exception as e:
-#         plt.close()
 #         return f"Error generating plot: {str(e)}"
+
+
+
+
+
+
+
+# @tool
+
+# def plot_tool(
+
+#     columns: list[str],
+
+#     plot_type: str,
+
+#     start_date: str = None,
+
+#     end_date: str = None,
+
+#     filter_type: str = None,
+
+#     threshold: float = None,
+
+#     low_threshold: float = None,
+
+#     high_threshold: float = None,
+
+#     count: int = None
+
+# ):
+#     """
+
+#     Generate visualization for selected columns with optional filtering.
+    
+#     Supports line, bar, and histogram plots with date-range filtering.
+    
+#     Filtering Rules:
+
+#     - Uses ACTUAL threshold values (from stats_tool), NOT percentiles
+
+#     - Supports:
+
+#         - percentile_below → uses `threshold`
+
+#         - percentile_above → uses `threshold`
+
+#         - percentile_range → uses `low_threshold` and `high_threshold`
+    
+#     Chaining Contract:
+
+#     - Thresholds and count MUST come from stats_tool
+
+#     - NEVER recompute thresholds inside this tool
+
+#     - If count is provided → use it directly
+
+#     - Else → fallback to computed row count
+    
+#     Args:
+
+#     - columns: list of column names
+
+#     - plot_type: {"line", "bar", "hist"}
+
+#     - start_date, end_date: optional date filters
+
+#     - filter_type: filtering mode
+
+#     - threshold: single cutoff value
+
+#     - low_threshold, high_threshold: range values
+
+#     - count: filtered count from stats_tool
+    
+#     Returns:
+
+#     - Success message or error string
+
+#     """
+ 
+ 
+#     df = DataFrameStore.get_df().copy()
+ 
+#     if df is None or df.empty:
+
+#         return "Error: No data available"
+ 
+#     try:
+
+#         columns = [validate_column(col) for col in columns]
+
+#     except Exception:
+
+#         return f"Error: Invalid columns {columns}"
+ 
+#     timestamp_col = df.columns[0]
+ 
+#     if not pd.api.types.is_datetime64_any_dtype(df[timestamp_col]):
+
+#         try:
+
+#             df[timestamp_col] = pd.to_datetime(df[timestamp_col])
+
+#         except:
+
+#             return "Error: Failed to parse timestamp column"
+ 
+#     if start_date:
+
+#         df = df[df[timestamp_col] >= pd.to_datetime(start_date)]
+ 
+#     if end_date:
+
+#         df = df[df[timestamp_col] <= pd.to_datetime(end_date)]
+ 
+#     if df.empty:
+
+#         return "Error: No data available after applying date filter"
+ 
+#     # ✅ APPLY FILTER USING ACTUAL THRESHOLD VALUES (NO RECOMPUTATION)
+
+#     col = columns[0]
+ 
+#     if filter_type == "percentile_below" and threshold is not None:
+
+#         df = df[df[col] <= threshold]
+ 
+#     elif filter_type == "percentile_above" and threshold is not None:
+
+#         df = df[df[col] >= threshold]
+ 
+#     elif filter_type == "percentile_range" and low_threshold is not None and high_threshold is not None:
+
+#         df = df[(df[col] >= low_threshold) & (df[col] <= high_threshold)]
+ 
+#     if df.empty:
+
+#         return "No data after applying filter"
+ 
+#     # ✅ USE COUNT FROM STATS TOOL (DO NOT RECOMPUTE)
+
+#     filtered_count = count if count is not None else len(df)
+ 
+#     if plot_type not in PLOT_FUNCTIONS:
+
+#         return "Error: Supported plot types: line, bar, hist"
+ 
+#     plot_id = str(uuid.uuid4())
+
+#     file_path = f"plots/{plot_id}.png"
+ 
+#     plt.figure(figsize=(10, 6))
+ 
+#     try:
+
+#         if plot_type == "line":
+
+#             df = df.set_index(timestamp_col)
+ 
+#         PLOT_FUNCTIONS[plot_type](df, columns)
+ 
+#         # ✅ DRAW ACTUAL THRESHOLD VALUES
+
+#         if threshold is not None:
+
+#             plt.axhline(threshold, linestyle="--", label=f"Threshold = {round(threshold, 4)}")
+ 
+#         if low_threshold is not None:
+
+#             plt.axhline(low_threshold, linestyle="--", label=f"Low = {round(low_threshold, 4)}")
+ 
+#         if high_threshold is not None:
+
+#             plt.axhline(high_threshold, linestyle="--", label=f"High = {round(high_threshold, 4)}")
+ 
+#         plt.title(f"{plot_type.capitalize()} Plot - {', '.join(columns)} (Count = {filtered_count})")
+
+#         plt.legend(title=f"Count = {filtered_count}")
+
+#         plt.grid(True, alpha=0.3)
+
+#         plt.tight_layout()
+ 
+#         plt.savefig(file_path)
+
+#         plt.show()
+
+#         plt.close()
+ 
+#         return f"Plot generated with filtering applied on {columns}"
+ 
+#     except Exception as e:
+
+#         plt.close()
+
+#         return f"Error generating plot: {str(e)}"
+ 
+
+
+# @tool
+# def plot_tool(
+#     columns: list[str],
+#     plot_type: str,
+#     start_date: str = None,
+#     end_date: str = None,
+#     filter_type: str = None,
+#     threshold: float = None,
+#     low_threshold: float = None,
+#     high_threshold: float = None,
+#     count: int = None
+# ):
+#     """
+#     Generate visualization using Plotly and save as PNG.
+    
+#     Displays the plot directly in Jupyter notebook (.ipynb).
+    
+#     Supports line, bar, and histogram plots with optional date-range and percentile filtering.
+    
+#     Filtering Rules:
+#     - Uses ACTUAL threshold values from stats_tool (never recomputes)
+#     - percentile_below → uses `threshold`
+#     - percentile_above → uses `threshold`
+#     - percentile_range → uses `low_threshold` + `high_threshold`
+    
+#     Chaining Contract:
+#     - Thresholds and count MUST come from stats_tool
+#     - start_date/end_date default to None (uses full dataset if not provided)
+    
+#     Args:
+#         columns: List of column names to plot
+#         plot_type: Type of plot ("line", "bar", "hist")
+#         start_date: Optional start date (None = full data)
+#         end_date: Optional end date (None = full data)
+#         filter_type: Filter mode ("percentile_below", "percentile_above", "percentile_range")
+#         threshold: Single threshold value
+#         low_threshold: Lower bound for range filter
+#         high_threshold: Upper bound for range filter
+#         count: Filtered data count from stats_tool (preferred over recomputing)
+    
+#     Returns:
+#         Success message with plot details or error string
+#     """
+ 
+#     df = DataFrameStore.get_df().copy()
+ 
+#     if df is None or df.empty:
+#         return "Error: No data available"
+ 
+#     try:
+#         columns = [validate_column(col) for col in columns]
+#     except Exception:
+#         return f"Error: Invalid columns {columns}"
+ 
+#     timestamp_col = df.columns[0]
+ 
+#     if not pd.api.types.is_datetime64_any_dtype(df[timestamp_col]):
+#         try:
+#             df[timestamp_col] = pd.to_datetime(df[timestamp_col])
+#         except:
+#             return "Error: Failed to parse timestamp column"
+ 
+#     if start_date:
+#         df = df[df[timestamp_col] >= pd.to_datetime(start_date)]
+#     if end_date:
+#         df = df[df[timestamp_col] <= pd.to_datetime(end_date)]
+ 
+#     if df.empty:
+#         return "Error: No data available after applying date filter"
+ 
+#     # Apply filter
+#     col = columns[0]
+#     if filter_type == "percentile_below" and threshold is not None:
+#         df = df[df[col] <= threshold]
+#     elif filter_type == "percentile_above" and threshold is not None:
+#         df = df[df[col] >= threshold]
+#     elif filter_type == "percentile_range" and low_threshold is not None and high_threshold is not None:
+#         df = df[(df[col] >= low_threshold) & (df[col] <= high_threshold)]
+ 
+#     if df.empty:
+#         return "No data after applying filter"
+ 
+#     filtered_count = count if count is not None else len(df)
+ 
+#     if plot_type not in ["line", "bar", "hist"]:
+#         return "Error: Supported plot types: line, bar, hist"
+ 
+#     plot_id = str(uuid.uuid4())
+#     file_path = f"plots/{plot_id}.png"   # ← Now always PNG
+ 
+#     try:
+#         df_plot = df.copy()
+
+#         # Create figure
+#         if plot_type == "line":
+#             df_plot = df_plot.set_index(timestamp_col)
+#             fig = px.line(df_plot, y=columns,
+#                           title=f"Line Plot - {', '.join(columns)} (Count = {filtered_count})")
+#         elif plot_type == "bar":
+#             if len(df_plot) > 150:
+#                 df_plot = df_plot.iloc[:150]
+#             fig = px.bar(df_plot.reset_index(), 
+#                          x=timestamp_col if timestamp_col in df_plot.columns else "index",
+#                          y=columns,
+#                          title=f"Bar Plot - {', '.join(columns)} (Count = {filtered_count})")
+#         else:  # hist
+#             fig = go.Figure()
+#             for c in columns:
+#                 fig.add_trace(go.Histogram(x=df_plot[c].dropna(), name=c, opacity=0.7, nbinsx=30))
+#             fig.update_layout(barmode="overlay")
+
+#         # Add threshold lines
+#         if threshold is not None:
+#             fig.add_hline(y=threshold, line_dash="dash", line_color="red",
+#                           annotation_text=f"Threshold = {round(threshold, 4)}")
+#         if low_threshold is not None:
+#             fig.add_hline(y=low_threshold, line_dash="dash", line_color="green",
+#                           annotation_text=f"Low = {round(low_threshold, 4)}")
+#         if high_threshold is not None:
+#             fig.add_hline(y=high_threshold, line_dash="dash", line_color="blue",
+#                           annotation_text=f"High = {round(high_threshold, 4)}")
+
+#         fig.update_layout(
+#             legend_title_text=f"Count = {filtered_count}",
+#             xaxis_title="Time" if plot_type == "line" else "Index",
+#             yaxis_title="Value",
+#             template="plotly_white",
+#             height=620,
+#             width=920
+#         )
+
+#         # Save as PNG
+#         fig.write_image(file_path)
+
+#         # Display the image directly in the notebook
+#         display(Image(filename=file_path))
+
+#         return f"{plot_type.capitalize()} plot generated successfully for column(s): {columns}\nSaved as: {file_path}"
+
+#     except Exception as e:
+#         return f"Error generating plot: {str(e)}"
+
+ 
 
 
 @tool
@@ -663,18 +944,6 @@ def info_tool():
 
     except Exception as e:
         return f"Error retrieving dataset info: {str(e)}"
-
-
-# @tool
-# def info_tool() -> dict:
-#     """Get dataset information."""
-#     df = DataFrameStore.get_df()
-#     return {
-#         "columns": list(df.columns),
-#         "dtypes": df.dtypes.astype(str).to_dict(),
-#         "sample": df.head(5).to_dict(orient="records"),
-#         "row_count": len(df)
-#     }
 
 
 
@@ -736,30 +1005,6 @@ def filter_tool(
     except Exception as e:
         return f"Error applying filter: {str(e)}"
 
-
-
-# @tool
-# def filter_tool(column: str, operator: str, value: float) -> dict:
-#     """Filter data."""
-#     df = DataFrameStore.get_df()
-#     column = validate_column(column)
-
-#     ops = {
-#         ">":  lambda x: x > value,
-#         "<":  lambda x: x < value,
-#         ">=": lambda x: x >= value,
-#         "<=": lambda x: x <= value,
-#         "==": lambda x: x == value,
-#     }
-
-#     if operator not in ops:
-#         return {"error": f"Unsupported operator '{operator}'. Use: >, <, >=, <=, =="}
-
-#     filtered = df[ops[operator](df[column])]
-#     return {
-#         "filtered_rows": len(filtered),
-#         "message": f"Filtered to {len(filtered)} rows"
-#     }
 
 
 TOOLS = [info_tool, stats_tool, plot_tool, filter_tool]
