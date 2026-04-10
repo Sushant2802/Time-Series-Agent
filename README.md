@@ -81,11 +81,11 @@ python main.py
 - Python  
 - LangGraph (ReAct Agent)  
 - AWS Bedrock (Claude - Converse API)  
-- Pandas, NumPy, Matplotlib  
+- Pandas, NumPy, Matplotlib, Plotly
 
 ---
 
 ## 👨‍💻 Author
 
 Sushant Mane  
-GenAI Engineer
+AI Engineer
