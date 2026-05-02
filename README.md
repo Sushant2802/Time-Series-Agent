@@ -87,5 +87,7 @@ python main.py
 
 ## 👨‍💻 Author
 
-Sushant Mane  
-AI Engineer
+**Sushant Mane** 
+_AI Engineer_  
+📧 **sushantm1210@gmail.com**
+
